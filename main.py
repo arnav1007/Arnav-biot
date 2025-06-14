@@ -1,32 +1,20 @@
 import streamlit as st
-import os
 import re
+import os
 from openai import OpenAI
 from dotenv import load_dotenv
+from qdrant_client import QdrantClient
+from qdrant_client.models import Filter, SearchRequest
 
+# Load OpenAI key
 load_dotenv()
 client = OpenAI()
 
-# Load Arnav's chat history
-def load_arnav_chats(file_path, limit=30):
-    with open(file_path, "r", encoding="utf-8") as f:
-        raw = f.read()
+# Init Qdrant client
+qdrant = QdrantClient(":memory:")  # Use same memory or persistent connection
+collection_name = "arnav-chats"
 
-    messages = re.findall(r'\d{1,2}/\d{1,2}/\d{2,4},.*? - (Arnav): (.+)', raw)
-    arnav_lines = [msg for _, msg in messages if msg.lower() != "null"]
-    last_lines = arnav_lines[-limit:]
-    return "\n".join(f"Arnav: {line.strip()}" for line in last_lines if line.strip())
-
-# Load chat examples
-chat_examples = load_arnav_chats("chat.txt")
-
-system_prompt = f"""
-You're Arnav. Reply like him in a sweet, cute, slightly dramatic style.
-Use this history to guide your tone and vocabulary:
-{chat_examples}
-"""
-
-# Streamlit UI
+# UI Setup
 st.set_page_config(page_title="Chat Like Arnav", page_icon="🤖")
 st.title("🤖 ChatLikeArnav")
 
@@ -47,15 +35,36 @@ if user_input:
         st.markdown(user_input)
 
     with st.spinner("Arnav is typing..."):
+        # Step 1: Embed user query
+        query_vector = client.embeddings.create(
+            input=user_input, model="text-embedding-3-small"
+        ).data[0].embedding
+
+        # Step 2: Search Qdrant
+        search_results = qdrant.search(
+            collection_name=collection_name,
+            query_vector=query_vector,
+            limit=5
+        )
+        retrieved_texts = "\n".join([hit.payload["text"] for hit in search_results])
+
+        # Step 3: Build prompt
+        system_prompt = f"""
+You are Arnav. Speak like him — sweet, cute, slightly dramatic, emotional.
+Use this chat memory to mimic his voice:
+{retrieved_texts}
+"""
+
+        # Step 4: Generate response
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
-                *st.session_state.messages
+                *st.session_state.messages,
             ]
         )
 
-        reply = response.choices[0].message.content
+        reply = response.choices[0].message.content.strip()
         st.session_state.messages.append({"role": "assistant", "content": reply})
 
         with st.chat_message("assistant"):
